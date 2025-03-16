@@ -4,7 +4,7 @@
 
 # The MIT License
 #
-# Copyright (c) 2025 nyankittone
+# Copyright (c) 2024 nyankittone
 # Copyright (c) 2017 Ryan Caloras and contributors (see https://github.com/rcaloras/bash-preexec)
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy of this
@@ -492,8 +492,9 @@ col_exit_fail=91    # Color of the exit code if it's not 0.
 col_at=37
 col_host=96         # Color of the system hostname.
 col_dir=94          # Color of the working directory.
-col_prompt=97
-col_ps2=93          # Color of the PS2 prompt.
+col_prompt=95
+col_ps2=35          # Color of the PS2 prompt.
+col_git_branch=93
 
 col_user=92  # Default color prompt if regular user.
 col_root=91  # Default color prompt if root user.
@@ -509,24 +510,22 @@ unset col_root
 
 PS1_MODE=full
 
-buildExitDetails() {
-    [[ -z $PREEXEC_TIME ]] || [[ -z $COMMAND_WAS_RUN ]] && return 1
+get_elapsed_time_string() {
+    [[ -z $preexec_time ]] || [[ -z $command_was_run ]] && return 1
 
     local curr_time=`date +%s%N`
-    local curr_time_formatted="`date +%H:%M:%S`"
 
     # hoooooo boy, this code for getting elapsed time is really buggy. oh hot
     # mama. Good god, mama mia, what terrible code. Big yikes. Absolutely
     # astonishing. I can't believe I've done this.
-    local elapsed_time=000$(expr $curr_time - $PREEXEC_TIME)
+    local elapsed_time=000$(expr $curr_time - $preexec_time)
+
+    # TODO: stop using epxr whereever possible, to speed up execution of this.
 
     #local elapsed_millisecs=$(expr \( $elapsed_time % 1000000000 \) / 1000000)
     local elapsed_millisecs=${elapsed_time: -9:3}
 
     elapsed_time=$(expr $elapsed_time / 1000000000)
-
-    # TODO: redo the time-formatting code so that it doesn't display feilds for
-    # days/hours/minutes if they have a value of zero.
 
     # getting seconds
     local elapsed_secs=$(expr $elapsed_time % 60)
@@ -552,100 +551,74 @@ buildExitDetails() {
         local elapsed_days=${elapsed_time}d
     fi
 
-    local formed_elapsed_time=$elapsed_days$elapsed_hours$elapsed_mins$elapsed_secs
-
-    if [[ $1 -ne 0 ]]; then
-        local exit_color="$col_exit_fail"
-    else
-        local exit_color="$col_details_second"
-    fi
-
-    echo "\33[0;${col_details_norm}mtook \33[1;${col_details_second}m$formed_elapsed_time \33[0;${col_details_norm}m(\33[${col_time_begin}m$PREEXEC_TIME_FORMATTED \33[${col_details_norm}m- \33[${col_time_end}m$curr_time_formatted\33[${col_details_norm}m), exit \33[1;${exit_color}m$1"
-
-    return 0
+    echo "$elapsed_days$elapsed_hours$elapsed_mins$elapsed_secs"
 }
 
 preexec() {
-    COMMAND_WAS_RUN=yuh
-
-    PREEXEC_TIME=`date +%s%N`
-    PREEXEC_TIME_FORMATTED=`date +%H:%M:%S`
+    command_was_run=yuh
+    preexec_time=`date +%s%N`
 }
-
 
 # This function is run after every command execution, and is responsible
 # for contructing the prompt and showing when the command finished running.
 precmd() {
-    local exit=$? # Grabbing the exit code of the command that was last run.
+    local exit_code=$?
+    local elapsed_time
+    elapsed_time=$(get_elapsed_time_string)
 
-    local pre_PS1="`buildExitDetails $exit`"
-    if [[ -n "$pre_PS1" ]]; then
-        pre_PS1="\n${pre_PS1}\n"
+    # print newline
+    printf '\33[m\n'
+
+    # generate PS1 value
+    if [ "$PS1_MODE" = 'minimal' ]; then
+        if [ "$(id -u)" = 0 ]; then
+            PS1="\[\033[1;${col_user}m\]#\[\033[m\] "
+        else
+            PS1="\[\033[1;${col_user}m\]$\[\033[m\] "
+        fi
+
+        return
+    fi
+
+
+    # Generating first part of left segment
+    PS1="\[\033[1;${col_prompt}m\]┎["
+    
+    local print_separator
+
+    # If a command was run before, put exit code and time info in the PS1
+    [ -n "$elapsed_time" ] && {
+        if [ "$exit_code" = 0 ]; then
+            PS1="${PS1}\[\033[0;1;${col_exit_success}m\]$exit_code\[\033[m\] in \[\033[1m\]$elapsed_time"
+        else
+            PS1="${PS1}\[\033[${col_exit_fail}m\]$exit_code\[\033[m\] in \[\033[1m\]$elapsed_time"
+        fi
+
+        print_separator=y
+    }
+
+    # Put hotname, username, and working directory into the PS1
+    [ -n "$print_separator" ] && PS1="${PS1} \[\033[1;90m\]| "
+
+    PS1="${PS1}\[\033[${col_user}m\]\u\[\033[m\]@\[\033[1;${col_host}m\]\h\[\033[m\]:"
+    if [ "$PS1_MODE" = "partial" ]; then
+        PS1="${PS1}\[\033[1;${col_dir}m\]\W"
     else
-        pre_PS1="\n"
+        PS1="${PS1}\[\033[1;${col_dir}m\]\w"
     fi
 
-    # Building the PS0 value, and the text showing when the command finished
-    # running.
-    # Here, $PS0 is used to show when a command starts running.
-#    local current_time_formatted=$(date +%H:%M:%S)
-#    local pre_PS1="\n\33[1;${col_brack_end}m<\33[mnow \
-#${current_time_formatted}\33[1;${col_brack_end}m>\33[m\n"
-#    local work_disp="\w"
-#    PS0="\[\033[1;${col_brack_start}m\]<\[\033[0m\]run \t\
-#\[\033[1;${col_brack_start}m\]>\[\033[0m\]\n"
+    # If in a git repo, add the git branch name to the PS1
+    local git_branch_capture
+    git_branch_capture=$(git branch 2>/dev/null)
+    [ $? = 0 ] && {
+        PS1="${PS1} \[\033[1;90m\]| \[\033[0;${col_git_branch}m\]$(sed '/^\* /p;d' <<< "$git_branch_capture" | sed 's/^..//')"
+    }
 
-    # The PS1 variable is set up differently depending on the value of
-    # PS1_MODE. "full" is how it's normally set up, "partial" makes only
-    # the last directory in the working directory path get shown, and "minimal"
-    # creates a truly minimalist prompt, that only prints a single $ (or # if
-    # you're root).
-
-    local work_disp="\w"
-
-    case $PS1_MODE in
-        partial)
-            local work_disp="\W"
-        ;;
-        minimal)
-            pre_PS1="\n"
-            unset PS0
-
-            if [[ $(whoami) = root ]]; then
-                PS1_end="\[\033[1;${col_user}m\]#\[\033[0m\] "
-            else
-                PS1_end="\[\033[1;${col_user}m\]$\[\033[0m\] "
-            fi
-
-            local skip=yuh
-        ;;
-        *) PS1_MODE=full
-        ;;
-    esac
-
-    # Displaying when the command run finished.
-    printf "$pre_PS1"
-
-    # The rest of this function below this comment is mainly responsible for
-    # building the PS1 value.
-
-    # Anything within this if statement isn't run when PS1_MODE is set to
-    # "minimal".
-    if [[ -z $skip ]]; then
-        # Part of PS1 containing the hostname and working directory.
-        local PS1_mid="\[\033[1;${col_user}m\]\u\[\033[${col_at}m\]@\[\033[${col_host}m\]\h \[\033[${col_dir}m\]${work_disp} "
-
-        PS1_end="\[\033[1;${col_prompt}m\]>\[\033[0m\] "
-    fi
-
-    # Setting the value for PS1, as well as PS2.
-    PS1="$PS1_beg$PS1_mid$PS1_end"
-    PS2="\[\033[1;${col_ps2}m\]?\[\033[0m\] "
-
-    unset COMMAND_WAS_RUN
-    unset PREEXEC_TIME
-    unset PREEXEC_TIME_FORMAT
+    # Generating tail end of PS1
+    PS1="${PS1}\[\033[1;${col_prompt}m\]]\n\[\033[1;${col_prompt}m\]┖>\[\033[m\] "
 }
+
+PS2="\[\033[0;${col_ps2}m\]┖>\[\033[m\] "
 
 # Creating a command for cycling the value of PS1_VALUE. "cps" is literally
 # short for "cycle prompt string".
@@ -706,7 +679,8 @@ fi
 alias diff="diff --color=auto"
 which ip 2> /dev/null && alias ip="ip -color=auto"
 export LESS='-R --use-color -Dd+b$Du+g$'
-export MANPAGER="less -R --use-color -Dd+b -Du+g" # This line seems broken somehow? I'll fix it later ig
+export MANPAGER="less -R --use-color -Dd+B -Du+C"
+export MANROFFOPT="-P -c"
 export SUDO_PROMPT="$(tput setaf 1 bold)Enter password:$(tput sgr0) "
 
 if [[ $(whoami) = root ]]; then
@@ -732,6 +706,10 @@ dir() { echo Use ls, you dumbass.; }
 goto() {
     cd "$1"
     $default_ls -l
+}
+
+rl() {
+    exec bash
 }
 
 set -o vi
