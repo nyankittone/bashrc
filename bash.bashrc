@@ -509,9 +509,10 @@ fi
 unset col_root
 
 PS1_MODE=full
+command_was_run=
 
 get_elapsed_time_string() {
-    [[ -z $preexec_time ]] || [[ -z $command_was_run ]] && return 1
+    [[ -z $preexec_time ]] || [ -z "${show_elapsed+bruh}" ] && return 1
 
     local curr_time=`date +%s%N`
 
@@ -555,7 +556,8 @@ get_elapsed_time_string() {
 }
 
 preexec() {
-    command_was_run=yuh
+    show_elapsed=
+    command_was_run=
     preexec_time=`date +%s%N`
 }
 
@@ -563,6 +565,9 @@ preexec() {
 # for contructing the prompt and showing when the command finished running.
 precmd() {
     local exit_code=$?
+
+    [ -z "${command_was_run+bruh}" ] && return
+
     local elapsed_time
     elapsed_time=$(get_elapsed_time_string)
 
@@ -616,6 +621,8 @@ precmd() {
 
     # Generating tail end of PS1
     PS1="${PS1}\[\033[1;${col_prompt}m\]]\n\[\033[1;${col_prompt}m\]┖>\[\033[m\] "
+
+    unset command_was_run
 }
 
 PS2="\[\033[0;${col_ps2}m\]┖>\[\033[m\] "
